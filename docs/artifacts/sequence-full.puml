@@ -1,0 +1,97 @@
+@startuml sequence-full
+title Полный сценарий: приборы заняты → переполнение буфера → выбивание (Д1ОО2)\n→ освобождение прибора → постановка заявки на обслуживание (Д2Б5, Д2П1)
+autonumber
+
+participant "Источник i\n(Игровой клиент)" as Src
+participant "Источник m\n(низкий приоритет)" as SrcM
+control "Диспетчер\nпостановки" as DP
+queue "Буферная память\n(N мест, указатель УБ)" as Buf
+control "Диспетчер\nвыбора" as DS
+collections "Приборы 1..M\n(Обработчики)" as Dev
+database "Статистика" as Stat
+
+== Генерация заявки (ИБ, ИЗ1) ==
+Src -> Src: Событие «генерация»: Заявка(i, tGen = t)\nследующая генерация: t + τ, τ = −ln(r)/λ
+Src -> Stat: registerGenerated(request)
+Src -> DP: place(request)
+
+== Постановка в буфер (Д1ОЗ1) / Отказ (Д1ОО2) ==
+DP -> Buf: findFreeSlotFromPointer()
+loop от УБ по кольцу, не более N шагов
+  Buf -> Buf: место p занято → p = (p + 1) mod N
+end
+alt Найдено свободное место j
+  Buf --> DP: j
+  DP -> Buf: put(request, j)
+  Buf -> Buf: УБ = (j + 1) mod N
+  Buf --> DP: заявка размещена
+else Буфер переполнен (указатель вернулся на прежнее значение)
+  Buf --> DP: свободных мест нет
+  DP -> Buf: findRefuseCandidate()
+  note right of DP
+    **Д1ОО2** — отказ получает заявка от источника с
+    наименьшим приоритетом (наибольший номер) среди
+    заявок в буфере; если таких несколько —
+    дольше всех ожидающая (min tGen)
+  end note
+  Buf --> DP: заявка old (источник m) в месте q
+  DP -> Buf: evict(q)
+  Buf --> DP: old
+  DP -> DS: onRequestEvicted(old)
+  DS -> DS: если old в текущем пакете — удалить из пакета
+  DS --> DP: ok
+  DP -> Stat: registerRefused(old)
+  DP -> SrcM: «Действие не обработано, задержка сети»
+  DP -> Buf: put(request, q)
+  Buf -> Buf: УБ = (q + 1) mod N
+  Buf --> DP: заявка размещена
+end
+DP -> DS: onRequestBuffered() — триггерное событие
+
+== Попытка постановки на прибор (Д2П1) ==
+DS -> Dev: findFreeDevice(): перебор с прибора №1
+alt Есть свободный прибор k
+  Dev --> DS: прибор k
+  DS -> DS: перейти к блоку «Выбор заявки из буфера»
+else Все приборы заняты
+  Dev --> DS: свободных приборов нет
+  DS -> DS: ждать события «прибор освободился»
+end
+
+loop Пока все приборы заняты
+  Src -> DP: place(next request)
+  ref over DP, Buf : Постановка в буфер (Д1ОЗ1) / Отказ (Д1ОО2)\n(блок выше)
+end
+
+== Освобождение прибора (ПЗ2) ==
+Dev -> Dev: Событие «конец обслуживания» на приборе k\n(длительность tObs = a + (b − a)·r, ПЗ2)
+Dev -> SrcM: результат обработанного действия
+Dev -> Stat: registerServed(done, tObs)
+Dev -> DS: onDeviceFree(k) — триггерное событие
+
+== Выбор заявки из буфера (Д2Б5) и постановка на прибор (Д2П1) ==
+DS -> Buf: isEmpty()
+alt Буфер пуст
+  Buf --> DS: true
+  DS -> DS: прибор k простаивает
+else В буфере есть заявки
+  Buf --> DS: false
+  alt Текущий пакет не исчерпан
+    DS -> DS: request = следующая заявка пакета (FIFO)
+  else Пакет исчерпан → формируем новый
+    DS -> Buf: getHighestPrioritySource()
+    Buf --> DS: источник s (минимальный номер)
+    DS -> Buf: getRequestsBySource(s)
+    Buf --> DS: пакет P(s) — фиксирован, не расширяется
+    DS -> DS: request = первая заявка пакета (min tGen)
+  end
+  DS -> Buf: take(request)
+  Buf --> DS: request, место освобождено (УБ не меняется)
+  DS -> Stat: registerWaiting(request, t − tGen)
+  DS -> Dev: findFreeDevice(): перебор с №1 (Д2П1)
+  Dev --> DS: прибор k
+  DS -> Dev: serve(request, t)
+  Dev -> Dev: запланировать «конец обслуживания» на t + tObs
+  Dev --> DS: принято на обслуживание
+end
+@enduml

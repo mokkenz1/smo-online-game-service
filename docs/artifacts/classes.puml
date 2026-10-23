@@ -1,0 +1,199 @@
+@startuml classes
+title Диаграмма классов — Вариант 15
+skinparam classAttributeIconSize 0
+hide empty members
+
+enum ActionType {
+  MOVE
+  ATTACK
+  ABILITY
+  USE_ITEM
+  CHAT
+}
+
+enum EventType {
+  REQUEST_GENERATED
+  REQUEST_BUFFERED
+  REQUEST_REFUSED
+  REQUEST_SELECTED
+  REQUEST_SENT_TO_DEVICE
+  SERVICE_FINISHED
+}
+
+class Request {
+  - id: int
+  - sourceId: int
+  - actionType: ActionType
+  - tGenerated: double
+  - tBuffered: double
+  - tServiceStart: double
+  - tServiceEnd: double
+  + getSourceId(): int
+  + getPriority(): int
+  + getTGenerated(): double
+  + setServiceStart(t: double): void
+  + setServiceEnd(t: double): void
+  + getWaitingTime(): double
+  + getServiceTime(): double
+}
+
+class Source {
+  - id: int
+  - lambda: double
+  - requestCounter: int
+  - placementDispatcher: PlacementDispatcher
+  - calendar: EventCalendar
+  - statistics: StatisticsCollector
+  + generate(now: double): Request
+  - nextInterval(): double
+}
+note bottom of Source : ИБ + ИЗ1:\nnextInterval() = −ln(r) / λ
+
+class Buffer {
+  - slots: Request[]
+  - capacity: int
+  - pointer: int
+  + findFreeSlotFromPointer(): int
+  + put(request: Request, index: int): void
+  + findRefuseCandidate(): int
+  + evict(index: int): Request
+  + take(request: Request): void
+  + getHighestPrioritySource(): int
+  + getRequestsBySource(sourceId: int): List<Request>
+  + isEmpty(): boolean
+  + getPointer(): int
+  + getSnapshot(): List<Request>
+}
+note right of Buffer
+  pointer — указатель УБ (Д1ОЗ1, по кольцу)
+  findRefuseCandidate() — Д1ОО2:
+  max номер источника, при равенстве min tGen
+end note
+
+class PlacementDispatcher {
+  - buffer: Buffer
+  - selectionDispatcher: SelectionDispatcher
+  - statistics: StatisticsCollector
+  - calendar: EventCalendar
+  + place(request: Request, now: double): void
+  - refuse(victim: Request, now: double): void
+}
+
+class SelectionDispatcher {
+  - buffer: Buffer
+  - devices: List<Device>
+  - currentPacket: Deque<Request>
+  - statistics: StatisticsCollector
+  - calendar: EventCalendar
+  + onRequestBuffered(now: double): void
+  + onDeviceFree(device: Device, now: double): void
+  + onRequestEvicted(request: Request): void
+  - findFreeDevice(): Device
+  - selectRequest(): Request
+  - formPacket(): void
+}
+note right of SelectionDispatcher
+  findFreeDevice() — Д2П1 (с прибора №1)
+  selectRequest() / formPacket() — Д2Б5 (пакет)
+end note
+
+class Device {
+  - id: int
+  - a: double
+  - b: double
+  - currentRequest: Request
+  - busyUntil: double
+  - totalBusyTime: double
+  - selectionDispatcher: SelectionDispatcher
+  - calendar: EventCalendar
+  - statistics: StatisticsCollector
+  + isFree(): boolean
+  + serve(request: Request, now: double): void
+  + finish(now: double): Request
+  + getUtilization(totalTime: double): double
+  - nextServiceTime(): double
+}
+note bottom of Device : ПЗ2:\nnextServiceTime() = a + (b − a)·r
+
+class Event {
+  - time: double
+  - type: EventType
+  - request: Request
+  - sourceId: int
+  - deviceId: int
+  + getTime(): double
+  + getType(): EventType
+}
+
+class EventCalendar {
+  - events: PriorityQueue<Event>
+  - log: List<Event>
+  + add(event: Event): void
+  + next(): Event
+  + isEmpty(): boolean
+  + getLog(): List<Event>
+}
+
+class StatisticsCollector {
+  - generated: int[]
+  - refused: int[]
+  - served: int[]
+  - sumWaiting: double[]
+  - sumService: double[]
+  + registerGenerated(request: Request): void
+  + registerRefused(request: Request): void
+  + registerWaiting(request: Request): void
+  + registerServed(request: Request): void
+  + getRefusalProbability(sourceId: int): double
+  + getAvgTimeInSystem(sourceId: int): double
+  + getAvgWaiting(sourceId: int): double
+  + getDeviceUtilization(device: Device, totalTime: double): double
+}
+
+class Simulator {
+  - currentTime: double
+  - sources: List<Source>
+  - devices: List<Device>
+  - buffer: Buffer
+  - placementDispatcher: PlacementDispatcher
+  - selectionDispatcher: SelectionDispatcher
+  - calendar: EventCalendar
+  - statistics: StatisticsCollector
+  + step(): Event
+  + runAuto(nRequests: int): void
+  - handle(event: Event): void
+}
+
+class AutoReportView <<ОР1>> {
+  + showSummaryTable(stats: StatisticsCollector): void
+}
+
+class StepView <<ОД3>> {
+  + showTimeline(log: List<Event>): void
+  + showState(buffer: Buffer, devices: List<Device>): void
+}
+
+Simulator *-- "1..*" Source
+Simulator *-- "1..*" Device
+Simulator *-- "1" Buffer
+Simulator *-- "1" PlacementDispatcher
+Simulator *-- "1" SelectionDispatcher
+Simulator *-- "1" EventCalendar
+Simulator *-- "1" StatisticsCollector
+
+Source ..> Request : <<create>>
+Source --> PlacementDispatcher : place(request)
+PlacementDispatcher --> Buffer : put / evict
+PlacementDispatcher --> SelectionDispatcher : onRequestBuffered()
+SelectionDispatcher --> Buffer : take / getRequestsBySource
+SelectionDispatcher --> "1..*" Device : serve(request)
+Device --> SelectionDispatcher : onDeviceFree(device)
+Buffer o-- "0..N" Request
+Device o-- "0..1" Request
+Request --> ActionType
+EventCalendar o-- "0..*" Event
+Event --> EventType
+Event --> Request
+StepView ..> Simulator
+AutoReportView ..> StatisticsCollector
+@enduml

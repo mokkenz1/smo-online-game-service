@@ -1,0 +1,78 @@
+@startuml sequence-happy-flow
+title Happy Flow: буфер свободен, есть свободный обработчик\nВариант 15: ИБ – ИЗ1 – ПЗ2 – Д1ОЗ1 – Д1ОО2 – Д2П1 – Д2Б5 – ОР1 – ОД3
+autonumber
+
+participant "Источник i\n(Игровой клиент)" as Src
+control "Диспетчер\nпостановки" as DP
+queue "Буферная память\n(кольцевой буфер)" as Buf
+control "Диспетчер\nвыбора" as DS
+collections "Приборы 1..M\n(Обработчики)" as Dev
+database "Статистика" as Stat
+
+== Генерация заявки (ИБ, ИЗ1) ==
+Src -> Src: Событие «генерация»:\nсоздать Заявку(sourceId = i, tGen = t)
+note left of Src
+  **ИБ** — бесконечный источник
+  **ИЗ1** — пуассоновский поток:
+  τ = −ln(r) / λ,  r ∈ (0; 1)
+end note
+Src -> Src: Запланировать следующую генерацию на t + τ
+Src -> Stat: registerGenerated(request)
+Stat --> Src: учтено
+Src -> DP: place(request)
+
+== Постановка в буфер (Д1ОЗ1) ==
+DP -> Buf: findFreeSlotFromPointer()
+note right of Buf
+  **Д1ОЗ1** — по кольцу: поиск свободного места
+  начинается с указателя УБ (место, следующее за
+  последним занятым); дойдя до конца буфера,
+  поиск продолжается с начала
+end note
+Buf --> DP: свободное место j
+DP -> Buf: put(request, j)
+Buf -> Buf: УБ = (j + 1) mod N
+Buf --> DP: заявка размещена
+DP -> DS: onRequestBuffered() — триггерное событие
+
+== Выбор прибора (Д2П1) ==
+DS -> Dev: findFreeDevice()
+note right of DS
+  **Д2П1** — перебор приборов начиная
+  с №1 (наивысший приоритет)
+  до первого свободного
+end note
+Dev --> DS: прибор k свободен
+
+== Выбор заявки из буфера (Д2Б5) ==
+DS -> DS: текущий пакет пуст → formPacket()
+DS -> Buf: getHighestPrioritySource()
+note right of DS
+  **Д2Б5** — пакет = все заявки источника с наивысшим
+  приоритетом (min номер), находящиеся в буфере
+  в момент выбора. Пакет фиксирован (не расширяется),
+  внутри пакета — FIFO
+end note
+Buf --> DS: источник i
+DS -> Buf: getRequestsBySource(i)
+Buf --> DS: пакет P(i) = [request]
+DS -> Buf: take(request)
+Buf --> DS: request (место j освобождено)
+DS -> Stat: registerWaiting(request, t − tGen)
+DS -> Dev: serve(request, t) на приборе k
+Dev --> DS: принято на обслуживание
+
+== Обслуживание (ПЗ2) ==
+Dev -> Dev: tObs = a + (b − a)·r\nзапланировать «конец обслуживания» на t + tObs
+note right of Dev
+  **ПЗ2** — равномерный закон
+  обслуживания на [a; b]
+end note
+... t + tObs ...
+Dev -> Src: результат действия отправлен клиенту
+Dev -> Stat: registerServed(request, tObs)
+Dev -> DS: onDeviceFree(k) — триггерное событие
+DS -> Buf: isEmpty()
+Buf --> DS: true
+DS -> DS: пакет исчерпан, буфер пуст →\nприбор k простаивает
+@enduml
